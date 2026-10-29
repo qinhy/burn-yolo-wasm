@@ -1,0 +1,13 @@
+[project]
+name = "burn-yolo-wasm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=1.26",
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+    "onnxscript>=0.3",
+    "ultralytics>=8.3,<9",
+]

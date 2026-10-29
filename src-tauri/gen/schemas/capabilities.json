@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Core Tauri window operations only; all inference is local WASM in the frontend.","local":true,"windows":["main"],"permissions":["core:default"]}}

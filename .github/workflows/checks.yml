@@ -1,0 +1,16 @@
+name: Source checks
+on:
+  push:
+  pull_request:
+jobs:
+  geometry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+      - run: python -m compileall -q scripts
+  # Cargo tests are intentionally not run here: generated YOLO Rust + .bpk
+  # are produced from externally licensed model weights on the developer machine.

@@ -1,0 +1,21 @@
+{
+  "name": "burn-yolo-wasm",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "wasm": "wasm-pack build crates/inference --target web --release --out-dir ../../src/wasm/pkg",
+    "dev": "yarn wasm && vite --host 127.0.0.1",
+    "build": "yarn wasm && vue-tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.3",
+    "vue-tsc": "^2.2.10"
+  }
+}
