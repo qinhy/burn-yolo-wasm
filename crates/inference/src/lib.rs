@@ -3,6 +3,8 @@
 
 use std::{cell::RefCell, io::{Cursor, Read}};
 use burn::tensor::{Bytes, Device, Tensor, TensorData};
+use serde::Serialize;
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 mod postprocess;
@@ -23,6 +25,7 @@ struct Engine {
     backend: String,
     /// Original selection, used to make repeated initialize calls idempotent.
     preference: String,
+    weights_bytes: usize,
 }
 
 thread_local! {
@@ -30,6 +33,58 @@ thread_local! {
     // CubeCL's WebGPU runtime is registered per device and must be initialized once.
     // Keeping this handle alive also lets us switch CPU -> GPU without re-registering.
     static GPU_DEVICE: RefCell<Option<Device>> = const { RefCell::new(None) };
+}
+
+// High-resolution wall-clock timing in both browser and Tauri Web Workers.
+// This measures CPU wall time. GPU work can finish later during readback.
+fn now_ms() -> f64 {
+    if let Ok(value) = js_sys::Reflect::get(
+        &js_sys::global(),
+        &JsValue::from_str("performance"),
+    ) {
+        if let Ok(perf) = value.dyn_into::<web_sys::Performance>() {
+            return perf.now();
+        }
+    }
+    js_sys::Date::now()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InitMetrics {
+    backend: String,
+    preference: String,
+    reused_model: bool,
+    device_init_ms: f64,
+    unzip_ms: f64,
+    model_load_ms: f64,
+    rust_init_total_ms: f64,
+    zip_bytes: usize,
+    weights_bytes: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectMetrics {
+    backend: String,
+    rgba_to_nchw_ms: f64,
+    tensor_and_forward_ms: f64,
+    readback_wait_ms: f64,
+    data_to_vec_ms: f64,
+    decode_nms_ms: f64,
+    rust_total_ms: f64,
+    input_rgba_bytes: usize,
+    nchw_bytes: usize,
+    output_bytes: usize,
+    output_shape: [usize; 3],
+    detection_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetectResult {
+    detections: Vec<postprocess::Detection>,
+    metrics: DetectMetrics,
 }
 
 fn err<E: std::fmt::Display>(e: E) -> JsValue {
@@ -62,27 +117,37 @@ async fn initialize_gpu() -> Result<Device, JsValue> {
     Ok(device)
 }
 
-/// Creates one model and keeps it in this Web Worker. "auto" tries WebGPU then CPU.
-/// Switching backend reloads the model once; all frame inference calls reuse it.
+/// Creates/reuses one model per Worker. Reports cold-init and model reuse.
+/// CPU-GPU comparison MUST exclude initial unpacking and GPU shader compilation.
 #[wasm_bindgen]
-pub async fn initialize(preference: &str) -> Result<String, JsValue> {
+pub async fn initialize(preference: &str) -> Result<JsValue, JsValue> {
+    let total_start = now_ms();
     if !matches!(preference, "auto" | "gpu" | "cpu") {
         return Err(err("Backend must be auto, gpu, or cpu"));
     }
-    // Repeated requests for the same backend should not reinitialize the GPU
-    // runtime or reload the (10 MB+) compressed model. Auto may reuse an
-    // already-running GPU model even when it was explicitly requested as gpu.
-    if let Some(current) = ENGINE.with(|slot| {
+    if let Some((backend, weights_bytes)) = ENGINE.with(|slot| {
         let slot = slot.borrow();
         slot.as_ref().and_then(|engine| {
             let reuse = engine.preference == preference
                 || (preference == "auto" && engine.backend == "WebGPU");
-            reuse.then(|| engine.backend.clone())
+            reuse.then(|| (engine.backend.clone(), engine.weights_bytes))
         })
     }) {
-        return Ok(current);
+        let info = InitMetrics {
+            backend,
+            preference: preference.to_string(),
+            reused_model: true,
+            device_init_ms: 0.0,
+            unzip_ms: 0.0,
+            model_load_ms: 0.0,
+            rust_init_total_ms: now_ms() - total_start,
+            zip_bytes: EMBEDDED_ZIP.len(),
+            weights_bytes,
+        };
+        return serde_wasm_bindgen::to_value(&info).map_err(err);
     }
 
+    let device_start = now_ms();
     let (device, backend) = match preference {
         "cpu" => (Device::flex(), "Flex CPU"),
         "gpu" => (initialize_gpu().await?, "WebGPU"),
@@ -91,18 +156,37 @@ pub async fn initialize(preference: &str) -> Result<String, JsValue> {
             Err(_) => (Device::flex(), "Flex CPU (WebGPU unavailable)"),
         },
     };
+    let device_init_ms = now_ms() - device_start;
 
+    let unzip_start = now_ms();
     let raw = unzip_weights()?;
+    let weights_bytes = raw.len();
+    let unzip_ms = now_ms() - unzip_start;
+
+    let load_start = now_ms();
     let model = generated::Model::from_bytes(Bytes::from_bytes_vec(raw), &device);
+    let model_load_ms = now_ms() - load_start;
     ENGINE.with(|slot| {
         *slot.borrow_mut() = Some(Engine {
             device,
             model,
             backend: backend.to_owned(),
             preference: preference.to_owned(),
+            weights_bytes,
         });
     });
-    Ok(backend.to_owned())
+    let info = InitMetrics {
+        backend: backend.to_owned(),
+        preference: preference.to_owned(),
+        reused_model: false,
+        device_init_ms,
+        unzip_ms,
+        model_load_ms,
+        rust_init_total_ms: now_ms() - total_start,
+        zip_bytes: EMBEDDED_ZIP.len(),
+        weights_bytes,
+    };
+    serde_wasm_bindgen::to_value(&info).map_err(err)
 }
 
 fn rgba_to_rgb_nchw(rgba: &[u8]) -> Result<Vec<f32>, JsValue> {
@@ -119,31 +203,61 @@ fn rgba_to_rgb_nchw(rgba: &[u8]) -> Result<Vec<f32>, JsValue> {
     Ok(data)
 }
 
-/// Returns an array of {x1,y1,x2,y2,score,class_id} in 320x320 letterbox coordinates.
-/// The caller maps these to source image coordinates using the shared geometry module.
+/// Output shape and phase timings; this is NOT an isolated GPU kernel benchmark.
+/// tensor_and_forward_ms is host-side tensor creation + GPU submission;
+/// readback_wait_ms includes pending GPU execution, transfer and synchronization.
 #[wasm_bindgen]
 pub async fn detect(rgba: Vec<u8>, confidence: f32, iou: f32) -> Result<JsValue, JsValue> {
+    let total_start = now_ms();
     if !(0.0..=1.0).contains(&confidence) || !(0.0..=1.0).contains(&iou) {
         return Err(err("confidence and IoU must be in [0, 1]"));
     }
+    let input_rgba_bytes = rgba.len();
     let pixels = rgba_to_rgb_nchw(&rgba)?;
-    // Run the model while borrowed; transfer only its output Tensor across await.
-    let output: Tensor<3> = ENGINE.with(|slot| -> Result<Tensor<3>, JsValue> {
+    let rgba_to_nchw_ms = now_ms() - total_start;
+    let nchw_bytes = pixels.len() * std::mem::size_of::<f32>();
+
+    let forward_start = now_ms();
+    let (output, backend): (Tensor<3>, String) = ENGINE.with(|slot| -> Result<_, JsValue> {
         let guard = slot.borrow();
         let engine = guard.as_ref().ok_or_else(|| err("Call initialize() first"))?;
         let input = Tensor::<4>::from_data(
             TensorData::new(pixels, [1, 3, INPUT_SIZE, INPUT_SIZE]),
             &engine.device,
         );
-        Ok(engine.model.forward(input))
+        Ok((engine.model.forward(input), engine.backend.clone()))
     })?;
+    let tensor_and_forward_ms = now_ms() - forward_start;
+    let output_shape = output.dims();
+    let output_bytes = output_shape.iter().product::<usize>() * std::mem::size_of::<f32>();
 
-    let shape = output.dims();
-    // WebGPU readback must be asynchronous in the browser.
+    let read_start = now_ms();
     let data = output.into_data_async().await.map_err(err)?;
+    let readback_wait_ms = now_ms() - read_start;
+    let convert_start = now_ms();
     let values = data.try_into_vec::<f32>().map_err(err)?;
-    let detections = postprocess::decode_and_nms(&values, shape, confidence, iou).map_err(err)?;
-    serde_wasm_bindgen::to_value(&detections).map_err(err)
+    let data_to_vec_ms = now_ms() - convert_start;
+    let nms_start = now_ms();
+    let detections = postprocess::decode_and_nms(&values, output_shape, confidence, iou).map_err(err)?;
+    let decode_nms_ms = now_ms() - nms_start;
+
+    serde_wasm_bindgen::to_value(&DetectResult {
+        metrics: DetectMetrics {
+            backend,
+            rgba_to_nchw_ms,
+            tensor_and_forward_ms,
+            readback_wait_ms,
+            data_to_vec_ms,
+            decode_nms_ms,
+            rust_total_ms: now_ms() - total_start,
+            input_rgba_bytes,
+            nchw_bytes,
+            output_bytes,
+            output_shape,
+            detection_count: detections.len(),
+        },
+        detections,
+    }).map_err(err)
 }
 
 #[wasm_bindgen]

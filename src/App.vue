@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import meta from './model-meta.json';
-import { InferenceClient, type BackendPreference, type Detection } from './lib/inference';
+import { InferenceClient, type BackendPreference, type Detection, type DetectReport, type InitReport } from './lib/inference';
+import { summarize, type Summary } from './lib/stats.mjs';
 import { drawDetections, preprocess, type Geometry } from './lib/geometry.ts';
 
 const backend = ref<BackendPreference>('auto');
@@ -16,6 +17,25 @@ const status = ref('Initializing Burn WebAssembly…');
 const error = ref('');
 const detections = ref<Detection[]>([]);
 const elapsedMs = ref<number | null>(null);
+const initReport = ref<InitReport | null>(null);
+const lastReport = ref<DetectReport | null>(null);
+type FrameTimings = { preprocessMs: number; renderMs: number; totalMs: number };
+const frameTimings = ref<FrameTimings | null>(null);
+type BenchmarkMetrics = 'roundTrip' | 'rustTotal' | 'forward' | 'readback' | 'nms';
+type BenchmarkRow = {
+  backend: string;
+  preference: 'cpu' | 'gpu';
+  status: 'ok' | 'error';
+  error?: string;
+  init?: InitReport;
+  warmup: number;
+  iterations: number;
+  stats?: Record<BenchmarkMetrics, Summary | null>;
+};
+const benchmarkRows = ref<BenchmarkRow[]>([]);
+const benchmarking = ref(false);
+const benchmarkProgress = ref('');
+const diagnosticsNotice = ref('');
 const canvas = ref<HTMLCanvasElement | null>(null);
 const video = ref<HTMLVideoElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -30,6 +50,14 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 const labelNames = meta.names;
 const backendDescription = computed(() => activeBackend.value.includes('WebGPU') ? 'GPU accelerated' : 'CPU inference');
 const sortedDetections = computed(() => detections.value.slice().sort((a, b) => b.score - a.score));
+const comparison = computed(() => {
+  const cpu = benchmarkRows.value.find((r) => r.preference === 'cpu')?.stats?.roundTrip?.median;
+  const gpu = benchmarkRows.value.find((r) => r.preference === 'gpu')?.stats?.roundTrip?.median;
+  if (!cpu || !gpu) return null;
+  return cpu >= gpu
+    ? `WebGPU ${ (cpu / gpu).toFixed(2) }× faster than CPU (median round-trip)`
+    : `WebGPU ${ (gpu / cpu).toFixed(2) }× slower than CPU (median round-trip)`;
+});
 
 async function setBackend(): Promise<void> {
   if (busy.value) return;
@@ -38,7 +66,10 @@ async function setBackend(): Promise<void> {
   error.value = '';
   status.value = `Loading model (${backend.value})…`;
   try {
-    activeBackend.value = await client.initialize(backend.value);
+    const report = await client.initialize(backend.value);
+    initReport.value = report;
+    activeBackend.value = report.backend;
+    console.info('[Burn YOLO] Initialization diagnostics', report);
     ready.value = true;
     status.value = `Model ready · ${activeBackend.value}`;
   } catch (cause) {
@@ -58,12 +89,21 @@ async function runFrame(source: CanvasImageSource, width: number, height: number
   const started = performance.now();
   try {
     const { rgba, geometry }: { rgba: Uint8Array; geometry: Geometry } = preprocess(source, width, height);
-    const boxes = await client.detect(rgba, confidence.value, iou.value);
-    detections.value = boxes;
-    elapsedMs.value = performance.now() - started;
-    drawDetections(canvas.value, source, width, height, boxes, geometry, labelNames);
+    const preprocessMs = performance.now() - started;
+    const report = await client.detect(rgba, confidence.value, iou.value);
+    detections.value = report.detections;
+    lastReport.value = report;
+    const renderStart = performance.now();
+    drawDetections(canvas.value, source, width, height, report.detections, geometry, labelNames);
+    frameTimings.value = {
+      preprocessMs,
+      renderMs: performance.now() - renderStart,
+      totalMs: performance.now() - started,
+    };
+    elapsedMs.value = frameTimings.value.totalMs;
     hasFrame.value = true;
-    status.value = `${boxes.length} detection${boxes.length === 1 ? '' : 's'} · ${elapsedMs.value.toFixed(0)} ms`;
+    status.value = `${report.detections.length} detection${report.detections.length === 1 ? '' : 's'} · ${elapsedMs.value.toFixed(0)} ms`;
+    if (!camera.value) console.info('[Burn YOLO] Frame diagnostics', { ...report, frameTimings: frameTimings.value });
   } catch (cause) {
     error.value = `Inference failed: ${String(cause)}`;
     status.value = 'Inference error';
@@ -168,6 +208,127 @@ async function toggleCamera(): Promise<void> {
   }
 }
 
+const WARMUP = 3;
+const RUNS = 10;
+
+function formatMs(value: number | null | undefined): string {
+  return value == null || !Number.isFinite(value) ? '—' : `${value.toFixed(2)} ms`;
+}
+function formatMiB(bytes: number | null | undefined): string {
+  return bytes == null ? '—' : `${(bytes / 1048576).toFixed(2)} MiB`;
+}
+function medianMs(value: Summary | null | undefined): string {
+  return formatMs(value?.median);
+}
+function benchStage(rows: DetectReport[], selector: (row: DetectReport) => number): Summary | null {
+  return summarize(rows.map(selector));
+}
+
+/** Same source pixels, thresholds, Worker, and WASM for each backend.
+ * Excludes UI preprocessing and canvas drawing; includes Worker transfer and readback.
+ * Keep this separate from the camera loop for reproducible results.
+ */
+async function runBenchmark(): Promise<void> {
+  if (!selectedImage.value || !ready.value || busy.value) return;
+  stopCamera();
+  const image = selectedImage.value;
+  const originalBackend = backend.value;
+  busy.value = true;
+  benchmarking.value = true;
+  benchmarkRows.value = [];
+  error.value = '';
+  const start = performance.now();
+  try {
+    const { rgba } = preprocess(image, image.naturalWidth, image.naturalHeight);
+    for (const preference of ['cpu', 'gpu'] as const) {
+      benchmarkProgress.value = `Initializing ${preference.toUpperCase()}…`;
+      status.value = benchmarkProgress.value;
+      try {
+        const init = await client.initialize(preference);
+        const samples: DetectReport[] = [];
+        for (let index = 0; index < WARMUP + RUNS; index += 1) {
+          // detect transfers its input buffer, so provide a fresh copy each run.
+          // The copy occurs before request timing and is excluded from round-trip.
+          const input = new Uint8Array(rgba);
+          benchmarkProgress.value = `${preference.toUpperCase()} ${index + 1}/${WARMUP + RUNS} ${index < WARMUP ? '(warmup)' : '(measured)'}`;
+          status.value = benchmarkProgress.value;
+          const output = await client.detect(input, confidence.value, iou.value);
+          if (index >= WARMUP) samples.push(output);
+          // Allow UI to paint progress between serial requests.
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        }
+        const stats: Record<BenchmarkMetrics, Summary | null> = {
+          roundTrip: benchStage(samples, (item) => item.hostRoundTripMs),
+          rustTotal: benchStage(samples, (item) => item.metrics.rustTotalMs),
+          forward: benchStage(samples, (item) => item.metrics.tensorAndForwardMs),
+          readback: benchStage(samples, (item) => item.metrics.readbackWaitMs),
+          nms: benchStage(samples, (item) => item.metrics.decodeNmsMs),
+        };
+        benchmarkRows.value.push({ preference, backend: init.backend, status: 'ok', init, warmup: WARMUP, iterations: RUNS, stats });
+        console.table({ [preference]: Object.fromEntries(Object.entries(stats).map(([k, v]) => [k, v?.median])) });
+      } catch (cause) {
+        benchmarkRows.value.push({ preference, backend: preference, status: 'error', error: String(cause), warmup: WARMUP, iterations: RUNS });
+      }
+    }
+    console.info('[Burn YOLO] CPU / GPU benchmark summary', benchmarkRows.value);
+    status.value = `Benchmark completed in ${((performance.now() - start) / 1000).toFixed(1)}s`;
+  } catch (cause) {
+    error.value = `Benchmark failed: ${String(cause)}`;
+  } finally {
+    // Model selection is restored even if GPU fails; original preference remains in UI.
+    benchmarkProgress.value = 'Restoring original backend…';
+    try {
+      const restored = await client.initialize(originalBackend);
+      activeBackend.value = restored.backend;
+      initReport.value = restored;
+      ready.value = true;
+    } catch (cause) {
+      ready.value = false;
+      error.value = `Could not restore ${originalBackend} backend: ${String(cause)}`;
+    }
+    busy.value = false;
+    benchmarking.value = false;
+    benchmarkProgress.value = '';
+  }
+}
+
+function exportDiagnostics(): void {
+  const report = {
+    capturedAt: new Date().toISOString(),
+    app: 'Burn YOLO WASM diagnostics v1',
+    model: meta,
+    frontend: {
+      isTauri: '__TAURI_INTERNALS__' in window,
+      pageUrl: location.origin,
+      devicePixelRatio: window.devicePixelRatio,
+      selectedBackend: backend.value,
+      activeBackend: activeBackend.value,
+      confidence: confidence.value,
+      iou: iou.value,
+      sourceDimensions: selectedImage.value
+        ? [selectedImage.value.naturalWidth, selectedImage.value.naturalHeight] : null,
+    },
+    initialization: initReport.value,
+    lastFrame: frameTimings.value,
+    lastInference: lastReport.value ? { ...lastReport.value, detections: undefined } : null,
+    benchmark: benchmarkRows.value,
+    timingNotes: [
+      'tensorAndForwardMs is host tensor creation and forward dispatch, not isolated GPU execution.',
+      'readbackWaitMs can include queued GPU work, synchronization and output transfer.',
+      'Benchmark hostRoundTripMs includes Worker transfer and does not include image preprocessing or canvas rendering.',
+      'The adapter query describes the browser default GPU adapter and may not identify Burn wgpu device.',
+    ],
+  };
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'burn-yolo-performance-diagnostics.json';
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  diagnosticsNotice.value = 'Diagnostics JSON downloaded.';
+}
+
 function saveImage(): void {
   if (!canvas.value || !hasFrame.value) return;
   const anchor = document.createElement('a');
@@ -245,6 +406,64 @@ onUnmounted(() => {
           </div>
           <p v-else class="results-empty">No results yet. Load an image or use the camera to begin.</p>
           <p v-if="sortedDetections.length > 25" class="hint">Showing the 25 highest-confidence results.</p>
+        </section>
+        <section class="panel performance-panel">
+          <div class="panel-title"><h3>Performance diagnostics</h3><span class="count">BETA</span></div>
+          <p class="muted">Stage timings and a repeatable warm CPU vs WebGPU comparison. All times are wall-clock, not hardware GPU timestamps.</p>
+          <div class="diagnostic-actions">
+            <button class="button button-primary" :disabled="busy || !ready || !selectedImage" @click="runBenchmark">{{ benchmarking ? 'Benchmark running…' : 'Benchmark CPU vs GPU' }}</button>
+            <button class="button" @click="exportDiagnostics">↓ Diagnostics JSON</button>
+          </div>
+          <p v-if="benchmarkProgress" class="hint" role="status">{{ benchmarkProgress }}</p>
+          <p v-if="diagnosticsNotice" class="hint">{{ diagnosticsNotice }}</p>
+          <div v-if="frameTimings && lastReport" class="metrics">
+            <h4>Last frame</h4>
+            <div class="metric"><span>UI preprocessing</span><b>{{ formatMs(frameTimings.preprocessMs) }}</b></div>
+            <div class="metric"><span>RGBA → NCHW (Rust)</span><b>{{ formatMs(lastReport.metrics.rgbaToNchwMs) }}</b></div>
+            <div class="metric"><span>Tensor + forward dispatch*</span><b>{{ formatMs(lastReport.metrics.tensorAndForwardMs) }}</b></div>
+            <div class="metric"><span>Readback + GPU wait*</span><b>{{ formatMs(lastReport.metrics.readbackWaitMs) }}</b></div>
+            <div class="metric"><span>TensorData → Vec</span><b>{{ formatMs(lastReport.metrics.dataToVecMs) }}</b></div>
+            <div class="metric"><span>Decode + NMS</span><b>{{ formatMs(lastReport.metrics.decodeNmsMs) }}</b></div>
+            <div class="metric"><span>Rust total</span><b>{{ formatMs(lastReport.metrics.rustTotalMs) }}</b></div>
+            <div class="metric"><span>Worker round-trip</span><b>{{ formatMs(lastReport.hostRoundTripMs) }}</b></div>
+            <div class="metric"><span>Canvas drawing</span><b>{{ formatMs(frameTimings.renderMs) }}</b></div>
+            <div class="metric metric-emphasis"><span>Complete user-facing frame</span><b>{{ formatMs(frameTimings.totalMs) }}</b></div>
+            <div class="metric"><span>Output shape</span><b>{{ lastReport.metrics.outputShape.join(' × ') }}</b></div>
+            <div class="metric"><span>Input RGBA</span><b>{{ formatMiB(lastReport.metrics.inputRgbaBytes) }}</b></div>
+            <div class="metric"><span>GPU/CPU output data</span><b>{{ formatMiB(lastReport.metrics.outputBytes) }}</b></div>
+          </div>
+          <div v-if="benchmarkRows.length" class="benchmark-results">
+            <h4>Warm benchmark ({{ WARMUP }} warmups + {{ RUNS }} samples each)</h4>
+            <p v-if="comparison" class="comparison">{{ comparison }}</p>
+            <div v-for="result in benchmarkRows" :key="result.preference" class="benchmark-result">
+              <div class="metric metric-emphasis"><span>{{ result.preference.toUpperCase() }} · {{ result.backend }}</span><b>{{ result.status === 'ok' ? medianMs(result.stats?.roundTrip) : 'Failed' }}</b></div>
+              <template v-if="result.stats">
+                <div class="metric"><span>Round trip p90</span><b>{{ formatMs(result.stats.roundTrip?.p90) }}</b></div>
+                <div class="metric"><span>Rust total median</span><b>{{ medianMs(result.stats.rustTotal) }}</b></div>
+                <div class="metric"><span>Forward dispatch median*</span><b>{{ medianMs(result.stats.forward) }}</b></div>
+                <div class="metric"><span>Readback/wait median*</span><b>{{ medianMs(result.stats.readback) }}</b></div>
+                <div class="metric"><span>NMS median</span><b>{{ medianMs(result.stats.nms) }}</b></div>
+                <div class="metric"><span>Device init</span><b>{{ formatMs(result.init?.deviceInitMs) }}</b></div>
+              </template>
+              <p v-else class="error">{{ result.error }}</p>
+            </div>
+          </div>
+          <div v-if="initReport" class="metrics">
+            <h4>Model startup / environment</h4>
+            <div class="metric"><span>Model instance</span><b>{{ initReport.reusedModel ? 'Reused' : 'Cold load' }}</b></div>
+            <div class="metric"><span>WASM loader (first load)</span><b>{{ formatMs(initReport.wasmLoadMs) }}</b></div>
+            <div class="metric"><span>GPU/CPU device initialization</span><b>{{ formatMs(initReport.deviceInitMs) }}</b></div>
+            <div class="metric"><span>ZIP decompression</span><b>{{ formatMs(initReport.unzipMs) }}</b></div>
+            <div class="metric"><span>Burnpack model load</span><b>{{ formatMs(initReport.modelLoadMs) }}</b></div>
+            <div class="metric"><span>ZIP / Burnpack bytes</span><b>{{ formatMiB(initReport.zipBytes) }} / {{ formatMiB(initReport.weightsBytes) }}</b></div>
+            <div class="metric"><span>WebGPU in Worker</span><b>{{ initReport.environment.workerWebGpuAvailable ? 'Available' : 'Unavailable' }}</b></div>
+            <div class="metric"><span>Logical CPU cores</span><b>{{ initReport.environment.hardwareConcurrency ?? 'Unknown' }}</b></div>
+            <div class="metric"><span>Device memory (reported)</span><b>{{ initReport.environment.deviceMemoryGiB == null ? 'Not exposed' : `${initReport.environment.deviceMemoryGiB} GiB` }}</b></div>
+            <div class="metric"><span>Adapter vendor*</span><b>{{ initReport.environment.adapter?.vendor || 'Unavailable' }}</b></div>
+            <div class="metric"><span>Adapter device*</span><b>{{ initReport.environment.adapter?.device || initReport.environment.adapter?.description || 'Unavailable' }}</b></div>
+            <p class="hint">{{ initReport.environment.adapterNote }}</p>
+          </div>
+          <p class="hint">*Forward is host-side submission, not isolated GPU compute. Readback may include queued GPU execution and synchronization. Browser GPU adapter diagnostics do not guarantee the exact GPU selected by Burn. Download JSON for full values, browser details and sample summaries.</p>
         </section>
         <section class="panel panel-small"><h3>Deployment</h3><p class="muted">PyTorch → ONNX → Burn → embedded WASM</p><div class="chips"><span>Offline-ready inference</span><span>Shared Vue UI</span><span>ZIP weights</span><span>Class-aware NMS</span></div></section>
       </aside>

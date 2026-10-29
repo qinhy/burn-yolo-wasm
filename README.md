@@ -17,7 +17,7 @@ Ultralytics yolo11n.pt  --ONNX export-->  model/yolo11n.onnx
 
 - Python 3.10+ and CPU/GPU PyTorch, `ultralytics`, `onnx`, `onnxscript` and optional `onnxruntime` (install from `requirements-export.txt`)
 - Rust stable, `wasm32-unknown-unknown` target and `wasm-pack`
-- Node.js 20+ and npm
+- Node.js 20+ and npm **or Yarn 4**
 - Optional Tauri 2 prerequisites for your operating system, and `@tauri-apps/cli` via npm devDependencies
 
 ## Get started
@@ -40,7 +40,7 @@ npm install
 npm run dev
 ```
 
-Then visit `http://localhost:5173`, upload or drag in an image, or start the camera. The first WASM initialization decompresses weights and loads them once. Choose **Auto** to attempt WebGPU and fall back to Burn Flex CPU if GPU initialization fails. For lowest latency, explicitly select GPU on a WebGPU-capable Chromium browser. `npm run dev` builds the WASM automatically using `predev`.
+Then visit `http://localhost:5173`, upload or drag in an image, or start the camera. The first WASM initialization decompresses weights and loads them once. Choose **Auto** to attempt WebGPU and fall back to Burn Flex CPU if GPU initialization fails. For lowest latency, explicitly select GPU on a WebGPU-capable Chromium browser. `npm run dev` and `yarn dev` explicitly build the WASM before Vite (Yarn 4 does not invoke arbitrary `predev` lifecycle scripts).
 
 ### Deploy
 
@@ -70,7 +70,9 @@ crates/inference/            Burn Rust / wasm-bindgen inference
   src/model.zip              GENERATED and embedded at compile time
 scripts/prepare_model.py     PyTorch export, ONNX check, Burn import, ZIP pack
 src/inference.worker.ts      async WASM execution, backend switch
-src/lib/{inference,geometry,labels}.ts
+src/lib/inference.ts         worker client
+  src/lib/geometry.ts         canvas preprocessing and overlays
+  src/lib/geometry.mjs        pure geometry helpers (tested in Node)
 src/App.vue                  drag/drop, camera, canvas overlay, controls
 src-tauri/                  Tauri 2 shell using same dist/
 tests/                       postprocessing/geometry smoke tests
@@ -101,3 +103,11 @@ python scripts/check_onnx.py model/yolo11n.onnx        # validates ONNX contract
 - https://docs.ultralytics.com/modes/export/
 - https://v2.tauri.app/start/frontend/
 
+
+## Yarn 4 / Vite import fix (2026-10-29)
+
+`App.vue` explicitly imports `./lib/geometry.ts`. Without the extension, Vite may resolve `./lib/geometry.mjs` first, which exports only `letterboxGeometry` and `projectBox`; it does not export the canvas functions `preprocess` and `drawDetections`. The package scripts now invoke `wasm-pack` directly so both npm and Yarn 4 build WASM before Vite. Neither change requires re-exporting YOLO weights.
+
+## Performance diagnostics patch
+
+See [PERFORMANCE.md](PERFORMANCE.md) for the stage-by-stage timing reference, 3-warmup/10-run CPU-vs-WebGPU comparison, browser GPU adapter caveats, and JSON export. Use the new **Performance diagnostics** panel after loading an image. The benchmark preserves generated weights.
