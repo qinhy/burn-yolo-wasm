@@ -21,10 +21,15 @@ struct Engine {
     device: Device,
     model: generated::Model,
     backend: String,
+    /// Original selection, used to make repeated initialize calls idempotent.
+    preference: String,
 }
 
 thread_local! {
     static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
+    // CubeCL's WebGPU runtime is registered per device and must be initialized once.
+    // Keeping this handle alive also lets us switch CPU -> GPU without re-registering.
+    static GPU_DEVICE: RefCell<Option<Device>> = const { RefCell::new(None) };
 }
 
 fn err<E: std::fmt::Display>(e: E) -> JsValue {
@@ -44,9 +49,17 @@ fn unzip_weights() -> Result<Vec<u8>, JsValue> {
 }
 
 async fn initialize_gpu() -> Result<Device, JsValue> {
-    // Async initialization is important in WebGPU Web Workers.
-    // A failing GPU initialization is reported to the caller for fallback.
-    Device::wgpu_options().init_async().await.map_err(err)
+    // Once registered, a CubeCL/WGPU runtime must be reused rather than
+    // registered again. This cache survives switching between CPU and GPU.
+    if let Some(device) = GPU_DEVICE.with(|slot| slot.borrow().clone()) {
+        return Ok(device);
+    }
+
+    // Async initialization is required for WebGPU inside a browser worker.
+    // The JS worker serializes initialization requests, so this cannot race.
+    let device = Device::wgpu_options().init_async().await.map_err(err)?;
+    GPU_DEVICE.with(|slot| *slot.borrow_mut() = Some(device.clone()));
+    Ok(device)
 }
 
 /// Creates one model and keeps it in this Web Worker. "auto" tries WebGPU then CPU.
@@ -56,6 +69,20 @@ pub async fn initialize(preference: &str) -> Result<String, JsValue> {
     if !matches!(preference, "auto" | "gpu" | "cpu") {
         return Err(err("Backend must be auto, gpu, or cpu"));
     }
+    // Repeated requests for the same backend should not reinitialize the GPU
+    // runtime or reload the (10 MB+) compressed model. Auto may reuse an
+    // already-running GPU model even when it was explicitly requested as gpu.
+    if let Some(current) = ENGINE.with(|slot| {
+        let slot = slot.borrow();
+        slot.as_ref().and_then(|engine| {
+            let reuse = engine.preference == preference
+                || (preference == "auto" && engine.backend == "WebGPU");
+            reuse.then(|| engine.backend.clone())
+        })
+    }) {
+        return Ok(current);
+    }
+
     let (device, backend) = match preference {
         "cpu" => (Device::flex(), "Flex CPU"),
         "gpu" => (initialize_gpu().await?, "WebGPU"),
@@ -72,6 +99,7 @@ pub async fn initialize(preference: &str) -> Result<String, JsValue> {
             device,
             model,
             backend: backend.to_owned(),
+            preference: preference.to_owned(),
         });
     });
     Ok(backend.to_owned())

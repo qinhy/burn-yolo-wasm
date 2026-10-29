@@ -6,7 +6,11 @@
   "scripts": {
     "wasm": "wasm-pack build crates/inference --target web --release --out-dir ../../src/wasm/pkg",
     "dev": "yarn wasm && vite --host 127.0.0.1",
-    "build": "yarn wasm && vue-tsc --noEmit && vite build"
+    "build": "yarn wasm && vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "vue": "^3.5.13"
