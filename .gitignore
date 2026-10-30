@@ -17,3 +17,4 @@ yolo11n.onnx
 .python-version
 uv.lock
 .yarn/
+/experiments/mnist
