@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>YOLO GPU video · Rust/WASM</title></head>
+<body><main>
+<h1>YOLO GPU video · Rust/WASM</h1>
+<p>Video → GPU letterbox → Burn inference → GPU decode/NMS → GPU box rendering.</p>
+<p><a href="./">Original CPU/readback comparison</a></p>
+<div class="controls"><button id="camera">Start camera</button><label class="file">Open video<input id="file" type="file" accept="video/*"></label><button id="stop" disabled>Stop</button></div>
+<div class="controls"><label>Confidence <input id="confidence" type="number" min="0" max="1" step="0.05" value="0.25"></label><label>IoU <input id="iou" type="number" min="0" max="1" step="0.05" value="0.45"></label><button id="validate">Validate last frame (pauses streaming)</button><button id="download">Download metrics</button></div>
+<video id="source" muted playsinline loop hidden></video><canvas id="output" width="960" height="540"></canvas>
+<pre id="status">Choose a camera or local video. First inference includes shader compilation; judge performance after warmup.</pre>
+<p>Colored boxes are rendered from GPU detections. Pixel and prediction data stay on the GPU. Host timings include command preparation/submission, not GPU kernel time or display latency. Video import may involve browser-internal copies.</p>
+</main><script type="module" src="/src/video.ts"></script></body></html>

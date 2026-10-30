@@ -111,3 +111,7 @@ python scripts/check_onnx.py model/yolo11n.onnx        # validates ONNX contract
 ## Performance diagnostics patch
 
 See [PERFORMANCE.md](PERFORMANCE.md) for the stage-by-stage timing reference, 3-warmup/10-run CPU-vs-WebGPU comparison, browser GPU adapter caveats, and JSON export. Use the new **Performance diagnostics** panel after loading an image. The benchmark preserves generated weights.
+
+## Rust GPU video branch experiment
+
+See [VIDEO.md](VIDEO.md) for the `/video.html` camera/local-video path: GPU preprocessing → Burn YOLO → GPU decode/NMS → GPU rendering, with Rust-owned execution and an explicit stopped-frame correctness check.
