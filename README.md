@@ -111,3 +111,7 @@ python scripts/check_onnx.py model/yolo11n.onnx        # validates ONNX contract
 ## Performance diagnostics patch
 
 See [PERFORMANCE.md](PERFORMANCE.md) for the stage-by-stage timing reference, 3-warmup/10-run CPU-vs-WebGPU comparison, browser GPU adapter caveats, and JSON export. Use the new **Performance diagnostics** panel after loading an image. The benchmark preserves generated weights.
+
+## Minimal MNIST executor experiment
+
+See [experiments/mnist](experiments/mnist/README.md) for a trained three-linear-layer patch-token MLP, embedded Rust/WASM CPU inference, and a specialized single-dispatch WebGPU executor with output parity checks and latency/throughput benchmarks. Build it independently with `npm run mnist:wasm`, then serve with `npm run mnist:serve`.

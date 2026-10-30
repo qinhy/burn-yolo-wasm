@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "mnist:wasm": "wasm-pack build experiments/mnist --target web --release --out-dir pkg",
+    "mnist:serve": "python -m http.server 5174 --directory experiments/mnist"
   },
   "dependencies": {
     "vue": "^3.5.13"

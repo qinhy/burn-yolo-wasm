@@ -1,0 +1,7 @@
+data/
+node_modules/
+pkg/
+target/
+.venv/
+__pycache__/
+!Cargo.lock

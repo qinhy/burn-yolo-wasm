@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 2,
+  "timestampQueries": {
+    "supported": true,
+    "unit": "milliseconds (converted from nanoseconds)",
+    "scope": "compute pass only; repeated pass duration divided by dispatch count"
+  },
+  "stageDiagnostics": {
+    "singleImage": {
+      "images": 1,
+      "inputBytes": 3136,
+      "outputBytes": 40,
+      "samples": 20,
+      "dispatchRepeats": 100,
+      "maxOutputError": 0,
+      "stages": {
+        "uploadWriteBufferHostMs": {
+          "medianMs": 0,
+          "p95Ms": 0
+        },
+        "uploadCompletionWaitMs": {
+          "medianMs": 0.19999999995343387,
+          "p95Ms": 0.19999999995343387
+        },
+        "uploadHostThroughCompletionMs": {
+          "medianMs": 0.19999999995343387,
+          "p95Ms": 0.19999999995343387
+        },
+        "singleDispatch": {
+          "encodeHostMs": {
+            "medianMs": 0,
+            "p95Ms": 0.10000000009313226
+          },
+          "submitThroughCompletionMs": {
+            "medianMs": 2.4000000001396984,
+            "p95Ms": 2.5
+          },
+          "gpuPassMs": {
+            "medianMs": 0.381932,
+            "p95Ms": 0.425724
+          },
+          "gpuPassMsPerDispatch": {
+            "medianMs": 0.381932,
+            "p95Ms": 0.425724
+          }
+        },
+        "repeatedDispatches": {
+          "encodeHostMs": {
+            "medianMs": 0,
+            "p95Ms": 0.09999999986030161
+          },
+          "submitThroughCompletionMs": {
+            "medianMs": 22,
+            "p95Ms": 24.699999999953434
+          },
+          "gpuPassMs": {
+            "medianMs": 20.829741,
+            "p95Ms": 23.724958
+          },
+          "gpuPassMsPerDispatch": {
+            "medianMs": 0.20829741,
+            "p95Ms": 0.23724958000000002
+          }
+        },
+        "readbackEncodeHostMs": {
+          "medianMs": 0,
+          "p95Ms": 0.09999999986030161
+        },
+        "readbackSubmitHostMs": {
+          "medianMs": 0,
+          "p95Ms": 0.10000000009313226
+        },
+        "readbackMapWaitMs": {
+          "medianMs": 0.30000000004656613,
+          "p95Ms": 2.5
+        },
+        "readbackMappedCopyAndUnmapHostMs": {
+          "medianMs": 0,
+          "p95Ms": 0
+        },
+        "readbackHostTotalMs": {
+          "medianMs": 0.30000000004656613,
+          "p95Ms": 2.6000000000931323
+        }
+      }
+    },
+    "batch": {
+      "images": 100,
+      "inputBytes": 313600,
+      "outputBytes": 4000,
+      "samples": 20,
+      "dispatchRepeats": 100,
+      "maxOutputError": 0,
+      "stages": {
+        "uploadWriteBufferHostMs": {
+          "medianMs": 0.19999999995343387,
+          "p95Ms": 0.20000000018626451
+        },
+        "uploadCompletionWaitMs": {
+          "medianMs": 0.39999999990686774,
+          "p95Ms": 0.5
+        },
+        "uploadHostThroughCompletionMs": {
+          "medianMs": 0.5,
+          "p95Ms": 0.6999999999534339
+        },
+        "singleDispatch": {
+          "encodeHostMs": {
+            "medianMs": 0,
+            "p95Ms": 0.10000000009313226
+          },
+          "submitThroughCompletionMs": {
+            "medianMs": 6,
+            "p95Ms": 7.2000000001862645
+          },
+          "gpuPassMs": {
+            "medianMs": 4.395402,
+            "p95Ms": 6.159593
+          },
+          "gpuPassMsPerDispatch": {
+            "medianMs": 4.395402,
+            "p95Ms": 6.159593
+          }
+        },
+        "repeatedDispatches": {
+          "encodeHostMs": {
+            "medianMs": 0,
+            "p95Ms": 0
+          },
+          "submitThroughCompletionMs": {
+            "medianMs": 548.6000000000931,
+            "p95Ms": 581.8999999999069
+          },
+          "gpuPassMs": {
+            "medianMs": 546.821303,
+            "p95Ms": 580.280278
+          },
+          "gpuPassMsPerDispatch": {
+            "medianMs": 5.468213029999999,
+            "p95Ms": 5.8028027799999995
+          }
+        },
+        "readbackEncodeHostMs": {
+          "medianMs": 0,
+          "p95Ms": 0.10000000009313226
+        },
+        "readbackSubmitHostMs": {
+          "medianMs": 0,
+          "p95Ms": 0.10000000009313226
+        },
+        "readbackMapWaitMs": {
+          "medianMs": 0.5,
+          "p95Ms": 0.6999999999534339
+        },
+        "readbackMappedCopyAndUnmapHostMs": {
+          "medianMs": 0,
+          "p95Ms": 0.10000000009313226
+        },
+        "readbackHostTotalMs": {
+          "medianMs": 0.5999999998603016,
+          "p95Ms": 0.8999999999068677
+        }
+      }
+    }
+  },
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+  "adapter": {
+    "vendor": "google",
+    "architecture": "swiftshader",
+    "device": "",
+    "description": "",
+    "isFallbackAdapter": true
+  },
+  "training": {
+    "seed": 42,
+    "epochs": 15,
+    "torch_version": "2.15.0+cpu",
+    "architecture": "784 -> 16x49 tokens -> Linear(49,16)+ReLU -> flatten(256) -> Linear(256,64)+ReLU -> Linear(64,10)",
+    "parameters": 17898,
+    "weights_bytes": 71592,
+    "sha256": "1364371565e677e60e5c9222698c83c05bdf4506436f8bfb14582a20b7b9e719",
+    "test_examples": 10000,
+    "history": [
+      {
+        "epoch": 1,
+        "loss": 0.8339013867219289,
+        "test_accuracy": 0.9100000262260437
+      },
+      {
+        "epoch": 2,
+        "loss": 0.2822754841009776,
+        "test_accuracy": 0.9315000176429749
+      },
+      {
+        "epoch": 3,
+        "loss": 0.21965208183129628,
+        "test_accuracy": 0.9442999958992004
+      },
+      {
+        "epoch": 4,
+        "loss": 0.18335015960534415,
+        "test_accuracy": 0.9523000121116638
+      },
+      {
+        "epoch": 5,
+        "loss": 0.1604120642443498,
+        "test_accuracy": 0.9567999839782715
+      },
+      {
+        "epoch": 6,
+        "loss": 0.14277438215414684,
+        "test_accuracy": 0.9606999754905701
+      },
+      {
+        "epoch": 7,
+        "loss": 0.12838184736569722,
+        "test_accuracy": 0.9645000100135803
+      },
+      {
+        "epoch": 8,
+        "loss": 0.11649146835406621,
+        "test_accuracy": 0.9642999768257141
+      },
+      {
+        "epoch": 9,
+        "loss": 0.10653203417460123,
+        "test_accuracy": 0.9667999744415283
+      },
+      {
+        "epoch": 10,
+        "loss": 0.09886256693204244,
+        "test_accuracy": 0.9688000082969666
+      },
+      {
+        "epoch": 11,
+        "loss": 0.09355936917066573,
+        "test_accuracy": 0.9693999886512756
+      },
+      {
+        "epoch": 12,
+        "loss": 0.08722815463542938,
+        "test_accuracy": 0.9710999727249146
+      },
+      {
+        "epoch": 13,
+        "loss": 0.08089851752519607,
+        "test_accuracy": 0.972100019454956
+      },
+      {
+        "epoch": 14,
+        "loss": 0.07629670565525691,
+        "test_accuracy": 0.9714999794960022
+      },
+      {
+        "epoch": 15,
+        "loss": 0.07197599442799886,
+        "test_accuracy": 0.9729999899864197
+      }
+    ]
+  },
+  "parity": {
+    "maxCpuError": 5.7220458984375e-06,
+    "maxGpuError": 0,
+    "agreements": 100,
+    "examples": 100
+  },
+  "singleImage": {
+    "rustWasm": {
+      "medianMs": 0,
+      "p95Ms": 0.10000000009313226
+    },
+    "rustWasmAmortizedOver100Calls": {
+      "medianMs": 0.029000000001396985,
+      "p95Ms": 0.040999999998603015
+    },
+    "webgpuUploadComputeReadback": {
+      "medianMs": 2.7999999998137355,
+      "p95Ms": 3.4000000001396984
+    }
+  },
+  "batch": {
+    "size": 100,
+    "rustWasm": {
+      "medianMs": 2.9000000001396984,
+      "p95Ms": 3.800000000046566
+    },
+    "webgpuUploadComputeReadback": {
+      "medianMs": 6.300000000046566,
+      "p95Ms": 9
+    },
+    "gpuResidentHostCompletionPerDispatch": {
+      "medianMs": 5.549000000000233,
+      "p95Ms": 5.775999999999767
+    }
+  },
+  "notes": "Ordinary inference timings remain wall clock. Stage diagnostics deliberately fence upload, compute, and readback; their medians are not additive and do not reconstruct ordinary inference latency. Upload completion and readback map waits include browser scheduling/IPC and are not pure bus transfer time. Compute GPU timestamps exclude upload/readback/query resolve; compute host completion includes query resolve/copy when enabled. Single-dispatch timestamps can be quantized to zero; repeated timestamps amortize 100 dispatches, changing the workload. Resident runs reuse the last uploaded batch, exclude encoding/upload/readback, and amortize completion over 200 dispatches. CPU calls include WASM boundary copies. Timer precision and browser load affect results.",
+  "validationEnvironment": "Headless Chromium on WSL using forced SwiftShader software rendering; correctness validation only, not a hardware GPU performance result."
+}

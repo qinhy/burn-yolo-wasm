@@ -1,0 +1,64 @@
+{
+  "environment": "Headless Chromium 156 / SwiftShader, with --use-angle=vulkan --use-vulkan=swiftshader --enable-features=Vulkan --disable-vulkan-surface; fake camera used for camera lifecycle test. Not NVIDIA performance data.",
+  "demo": {
+    "mode": "MNIST video demo",
+    "adapter": {
+      "vendor": "google",
+      "architecture": "swiftshader",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": true
+    },
+    "submittedFrames": 32,
+    "droppedForBackpressure": 1,
+    "inFlight": 1,
+    "submittedFps": 28.5,
+    "meanHostFrameSubmitMs": 0.491,
+    "frameScheduling": "video frame callbacks",
+    "pixelReadbacks": 0,
+    "logitReadbacks": 0,
+    "note": "FPS counts submissions, not displayed frames; host time excludes GPU completion and display latency. Browser video import may involve internal copies."
+  },
+  "camera": {
+    "mode": "camera",
+    "adapter": {
+      "vendor": "google",
+      "architecture": "swiftshader",
+      "device": "",
+      "description": "",
+      "isFallbackAdapter": true
+    },
+    "submittedFrames": 12,
+    "droppedForBackpressure": 0,
+    "inFlight": 1,
+    "submittedFps": 20.2,
+    "meanHostFrameSubmitMs": 0.342,
+    "frameScheduling": "video frame callbacks",
+    "pixelReadbacks": 0,
+    "logitReadbacks": 0,
+    "note": "FPS counts submissions, not displayed frames; host time excludes GPU completion and display latency. Browser video import may involve internal copies."
+  },
+  "parity": [
+    {
+      "invert": false,
+      "renderedBackground": 255,
+      "maxPixelError": 0,
+      "maxLogitError": 0
+    },
+    {
+      "invert": true,
+      "renderedBackground": 255,
+      "maxPixelError": 0,
+      "maxLogitError": 0
+    }
+  ],
+  "pageErrors": [],
+  "checks": {
+    "continuousSyntheticVideo": true,
+    "cameraStartStop": true,
+    "preprocessingBothInversions": true,
+    "logitsMatchRust": true,
+    "gpuRenderedDigitMatchesCpuArgmax": true,
+    "cameraTracksReleased": true
+  }
+}

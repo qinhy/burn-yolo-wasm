@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MNIST Rust / WebGPU lab</title>
+<style>
+body{font:16px system-ui;max-width:960px;margin:40px auto;padding:0 20px;background:#111827;color:#e5e7eb}button{padding:12px 20px;font:inherit;cursor:pointer}pre{white-space:pre-wrap;background:#1f2937;padding:20px;border-radius:8px}canvas{image-rendering:pixelated;width:112px;height:112px;background:black}a{color:#93c5fd}
+</style>
+<h1>MNIST Rust / WebGPU lab</h1>
+<p><a href="./camera.html">Try the GPU camera / video pipeline</a></p>
+<p>Three linear layers, no convolution. One fused GPU dispatch. GPU timestamps and separate upload/readback diagnostics.</p>
+<canvas id="digit" width="28" height="28"></canvas>
+<p><button id="run">Validate and benchmark</button> <a href="./artifacts/training.json">Training report</a></p>
+<pre id="status">Ready. Benchmarks run on this machine; keep the tab visible.</pre>
+<script type="module">
+import init, { Mnist } from './pkg/mnist_tiny.js';
+import { Executor } from './executor.js';
+const status = document.querySelector('#status');
+const button = document.querySelector('#run');
+const argmax = x => x.indexOf(Math.max(...x));
+const stats = x => { const s = [...x].sort((a,b)=>a-b); return {medianMs:s[Math.floor(s.length/2)], p95Ms:s[Math.ceil(s.length*.95)-1]}; };
+button.onclick = async () => {
+  button.disabled = true;
+  let cpu, gpu;
+  try {
+    status.textContent = 'Initializing WASM, fixtures, GPU and pipelines…';
+    await init();
+    cpu = new Mnist();
+    const fixtures = await (await fetch('./artifacts/fixtures.json')).json();
+    const training = await (await fetch('./artifacts/training.json')).json();
+    const inputs = fixtures.map(f => Float32Array.from(f.pixels, x=>x/255));
+    const image = new ImageData(28,28);
+    fixtures[0].pixels.forEach((v,i)=>{image.data.set([v,v,v,255],i*4)});
+    document.querySelector('canvas').getContext('2d').putImageData(image,0,0);
+    let maxCpuError = 0;
+    for (let i=0;i<inputs.length;i++) {
+      const logits = cpu.predict(inputs[i]);
+      logits.forEach((v,j)=>maxCpuError=Math.max(maxCpuError,Math.abs(v-fixtures[i].logits[j])));
+    }
+    if (!Number.isFinite(maxCpuError) || maxCpuError>0.0002) throw new Error(`CPU parity failed: ${maxCpuError}`);
+    status.textContent = `CPU validated against PyTorch (${maxCpuError}). Initializing GPU…`;
+    gpu = await Executor.create(cpu.weights(), inputs.length);
+    const batch = new Float32Array(inputs.length*784);
+    inputs.forEach((x,i)=>batch.set(x,i*784));
+    const result = await gpu.predict(batch);
+    let maxGpuError=0, agreements=0;
+    for(let i=0;i<inputs.length;i++) {
+      const ref=cpu.predict(inputs[i]);
+      const actual=result.subarray(i*10,i*10+10);
+      actual.forEach((v,j)=>maxGpuError=Math.max(maxGpuError,Math.abs(v-ref[j])));
+      agreements += +(argmax(actual)===argmax(ref));
+    }
+    if(!Number.isFinite(maxGpuError) || maxGpuError>0.001 || agreements!==inputs.length) throw new Error(`GPU parity failed: error=${maxGpuError}, agreement=${agreements}`);
+    status.textContent='Parity passed. Warming up and measuring 100 sequential calls per backend…';
+    for(let i=0;i<20;i++) {cpu.predict(inputs[0]); await gpu.predict(inputs[0]);}
+    const cpuTimes=[],gpuTimes=[],batchCpu=[],batchGpu=[],cpuAmortized=[];
+    for(let i=0;i<100;i++) {
+      let t=performance.now();cpu.predict(inputs[i%inputs.length]);cpuTimes.push(performance.now()-t);
+      t=performance.now();await gpu.predict(inputs[i%inputs.length]);gpuTimes.push(performance.now()-t);
+      t=performance.now();for(const x of inputs)cpu.predict(x);batchCpu.push(performance.now()-t);
+      t=performance.now();await gpu.predict(batch);batchGpu.push(performance.now()-t);
+      t=performance.now();for(let r=0;r<100;r++)cpu.predict(inputs[i%inputs.length]);cpuAmortized.push((performance.now()-t)/100);
+      if(i%10===0) {status.textContent=`Benchmark ${i}/100…`;await new Promise(r=>setTimeout(r,0));}
+    }
+    const resident=[];
+    for(let i=0;i<10;i++)resident.push(await gpu.resident(inputs.length));
+    status.textContent='Measuring fenced upload, GPU timestamps and isolated readback…';
+    const summarize = rows => Object.fromEntries(Object.keys(rows[0]).map(key => {
+      const values = rows.map(row => row[key]);
+      if (values[0] === null) return [key, null];
+      if (typeof values[0] === 'object') return [key, summarize(values)];
+      return [key, stats(values)];
+    }));
+    const diagnostics = {};
+    const profileSamples = 20, dispatchRepeats = 100;
+    for (const [name, pixels] of [['singleImage', inputs[0]], ['batch', batch]]) {
+      const expected = name === 'singleImage' ? cpu.predict(inputs[0]) : result;
+      let profileMaxError = 0;
+      // Warm up query resolution/mapping as well as the compute path.
+      await gpu.profile(pixels, dispatchRepeats);
+      const rows = [];
+      for (let i=0; i<profileSamples; i++) {
+        const profile = await gpu.profile(pixels, dispatchRepeats);
+        profile.logits.forEach((v,j) => profileMaxError=Math.max(profileMaxError,Math.abs(v-expected[j])));
+        if (!Number.isFinite(profileMaxError) || profileMaxError > 0.001) throw new Error('Profile output parity failed');
+        rows.push(profile.metrics);
+        if(i%5===0) {status.textContent=`Stage diagnostics: ${name} ${i}/${profileSamples}…`;await new Promise(r=>setTimeout(r,0));}
+      }
+      diagnostics[name] = { images:pixels.length/784, inputBytes:pixels.byteLength,
+        outputBytes:expected.byteLength, samples:profileSamples, dispatchRepeats,
+        maxOutputError:profileMaxError, stages:summarize(rows) };
+    }
+    const report={schemaVersion:2,timestampQueries:{supported:gpu.timestampSupported,unit:'milliseconds (converted from nanoseconds)',scope:'compute pass only; repeated pass duration divided by dispatch count'},stageDiagnostics:diagnostics,userAgent:navigator.userAgent,adapter:gpu.adapter,training,parity:{maxCpuError,maxGpuError,agreements,examples:inputs.length},singleImage:{rustWasm:stats(cpuTimes),rustWasmAmortizedOver100Calls:stats(cpuAmortized),webgpuUploadComputeReadback:stats(gpuTimes)},batch:{size:inputs.length,rustWasm:stats(batchCpu),webgpuUploadComputeReadback:stats(batchGpu),gpuResidentHostCompletionPerDispatch:stats(resident)},notes:'Ordinary inference timings remain wall clock. Stage diagnostics deliberately fence upload, compute, and readback; their medians are not additive and do not reconstruct ordinary inference latency. Upload completion and readback map waits include browser scheduling/IPC and are not pure bus transfer time. Compute GPU timestamps exclude upload/readback/query resolve; compute host completion includes query resolve/copy when enabled. Single-dispatch timestamps can be quantized to zero; repeated timestamps amortize 100 dispatches, changing the workload. Resident runs reuse the last uploaded batch, exclude encoding/upload/readback, and amortize completion over 200 dispatches. CPU calls include WASM boundary copies. Timer precision and browser load affect results.'};
+    status.textContent=JSON.stringify(report,null,2);
+    const link=document.createElement('a'); link.textContent='Download benchmark JSON';
+    const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json'}));link.href=url;link.download='mnist-benchmark.json';link.onclick=()=>setTimeout(()=>URL.revokeObjectURL(url),1000);status.append('\n',link);
+  } catch(e) {status.textContent=String(e);} finally {gpu?.destroy();cpu?.free();button.disabled=false;}
+};
+</script>
